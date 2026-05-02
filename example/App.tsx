@@ -40,6 +40,8 @@ export default function App() {
   const [syncStatus, setSyncStatus] = useState<Record<string, any>>({});
   const [lastWarning, setLastWarning] = useState<string | null>(null);
   const [isBootstrapping, setIsBootstrapping] = useState(false);
+  const [isCheckingSync, setIsCheckingSync] = useState(false);
+  const [lastCheckAt, setLastCheckAt] = useState<number | null>(null);
   const [toast, setToast] = useState<{ message: string; key: number } | null>(
     null
   );
@@ -81,7 +83,9 @@ export default function App() {
             )
           )
         );
+        setIsCheckingSync(true);
         await OpenWearablesHealthSDK.syncNow();
+        setLastCheckAt(Date.now());
         setSyncStatus(OpenWearablesHealthSDK.getSyncStatus());
         setLastWarning(null);
         showToast(reason === "repair" ? "Connection repaired" : "Connected");
@@ -90,6 +94,7 @@ export default function App() {
     } catch (error) {
       return false;
     } finally {
+      setIsCheckingSync(false);
       setIsBootstrapping(false);
     }
   };
@@ -149,18 +154,10 @@ export default function App() {
 
       if (nextStatus.wasDisconnected && lastWarning !== "network") {
         setLastWarning("network");
-        Alert.alert(
-          "Sync paused",
-          "Your phone lost connection to the server. The app will retry when the connection comes back."
-        );
       }
 
       if (nextStatus.pendingSyncAfterUnlock && lastWarning !== "locked") {
         setLastWarning("locked");
-        Alert.alert(
-          "Sync paused",
-          "Your phone is locked, so Apple Health is holding some data. Unlock the phone and tap Resume Sync."
-        );
       }
     };
 
@@ -197,6 +194,7 @@ export default function App() {
   };
 
   const handleResumeSync = async () => {
+    setIsCheckingSync(true);
     try {
       const stored = OpenWearablesHealthSDK.getStoredCredentials();
       if (stored?.host) {
@@ -214,14 +212,17 @@ export default function App() {
       }
 
       await OpenWearablesHealthSDK.syncNow();
+      setLastCheckAt(Date.now());
       setSyncStatus(OpenWearablesHealthSDK.getSyncStatus());
       setLastWarning(null);
-      showToast("Sync resumed");
+      showToast(resumed ? "Sync resumed" : "Checked for new Health data");
     } catch (e: any) {
       Alert.alert(
         "Resume failed",
         "The app could not resume by itself. Use Connect once, then future syncs should resume automatically."
       );
+    } finally {
+      setIsCheckingSync(false);
     }
   };
 
@@ -299,6 +300,8 @@ export default function App() {
                   status={syncStatus}
                   isConnected={isConnected}
                   onResume={handleResumeSync}
+                  isChecking={isCheckingSync}
+                  lastCheckAt={lastCheckAt}
                 />
                 <ProvidersGroup
                   savedProvider={credentials.provider}

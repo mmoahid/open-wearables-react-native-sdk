@@ -1,116 +1,109 @@
 import { Ionicons } from "@expo/vector-icons";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { Group } from "./Group";
-
-type SyncStatus = Record<string, any>;
+import {
+  formatCount,
+  formatLastCheck,
+  presentSyncStatus,
+  type SyncStatus,
+} from "../utils/syncStatusPresentation";
 
 interface SyncProgressGroupProps {
   status: SyncStatus;
   isConnected: boolean;
   onResume: () => void;
-}
-
-function formatCount(value: unknown) {
-  const n = Number(value ?? 0);
-  if (!Number.isFinite(n)) return "0";
-  return Math.round(n).toLocaleString();
-}
-
-function formatEta(status: SyncStatus) {
-  const sent = Number(status.sentCount ?? 0);
-  const createdAt = status.createdAt ? Date.parse(String(status.createdAt)) : NaN;
-  if (!Number.isFinite(sent) || sent < 100 || !Number.isFinite(createdAt)) {
-    return "Estimating once more data moves";
-  }
-
-  const minutes = Math.max((Date.now() - createdAt) / 60000, 0.1);
-  const perMinute = sent / minutes;
-  if (perMinute < 1) return "Waiting for Apple Health";
-
-  const completed = Number(status.completedTypes ?? 0);
-  const total = Number(status.totalTypes ?? 0);
-  if (total > 0 && completed < total) {
-    const remainingTypes = total - completed;
-    const estimatedMinutes = Math.max(remainingTypes * 2, 1);
-    return estimatedMinutes < 60
-      ? `Roughly ${Math.ceil(estimatedMinutes)} min left`
-      : "This may take over an hour";
-  }
-
-  return "Almost done";
-}
-
-function statusText(status: SyncStatus, isConnected: boolean) {
-  if (!isConnected) return "Needs connection";
-  if (status.wasDisconnected) return "Network disconnected";
-  if (status.pendingSyncAfterUnlock) return "Paused until phone unlocks";
-  if (status.isSyncing) return "Syncing now";
-  if (status.isSyncActive) return "Watching for new data";
-  if (status.hasResumableSession) return "Ready to resume";
-  return "Idle";
+  isChecking: boolean;
+  lastCheckAt: number | null;
 }
 
 export function SyncProgressGroup({
   status,
   isConnected,
   onResume,
+  isChecking,
+  lastCheckAt,
 }: SyncProgressGroupProps) {
-  const totalTypes = Number(status.totalTypes ?? 0);
-  const completedTypes = Number(status.completedTypes ?? 0);
-  const progress =
-    totalTypes > 0 ? Math.min(Math.max(completedTypes / totalTypes, 0), 1) : 0;
-  const currentType = status.currentType ? String(status.currentType) : "Waiting";
-  const needsAction =
-    !isConnected || status.wasDisconnected || status.pendingSyncAfterUnlock || status.hasResumableSession;
+  const presentation = presentSyncStatus(status, isConnected, isChecking);
 
   return (
-    <Group name="Live Sync Progress">
+    <Group name="Sync Status">
       <View style={styles.headerRow}>
         <View style={styles.iconBox}>
           <Ionicons
-            name={needsAction ? "warning-outline" : "pulse-outline"}
+            name={
+              presentation.needsAction
+                ? "warning-outline"
+                : "checkmark-circle-outline"
+            }
             size={20}
             color="#FFFFFF"
           />
         </View>
         <View style={styles.headerText}>
-          <Text style={styles.title}>{statusText(status, isConnected)}</Text>
-          <Text style={styles.subtitle}>
-            {status.isFullExport ? "Full history sync" : "Recent changes sync"}
-          </Text>
+          <Text style={styles.title}>{presentation.title}</Text>
+          <Text style={styles.subtitle}>{presentation.subtitle}</Text>
         </View>
       </View>
 
-      <View style={styles.progressTrack}>
-        <View style={[styles.progressFill, { width: `${progress * 100}%` }]} />
-      </View>
+      {presentation.showProgress ? (
+        <View style={styles.progressTrack}>
+          <View
+            style={[
+              styles.progressFill,
+              { width: `${presentation.progress * 100}%` },
+            ]}
+          />
+        </View>
+      ) : (
+        <View style={styles.steadyStateBox}>
+          <Text style={styles.steadyStateText}>
+            {presentation.steadyStateText}
+          </Text>
+        </View>
+      )}
 
       <View style={styles.metricsGrid}>
         <View style={styles.metric}>
           <Text style={styles.metricLabel}>Current</Text>
-          <Text style={styles.metricValue}>{currentType}</Text>
+          <Text style={styles.metricValue}>{presentation.currentType}</Text>
         </View>
         <View style={styles.metric}>
-          <Text style={styles.metricLabel}>Sent</Text>
-          <Text style={styles.metricValue}>{formatCount(status.sentCount)}</Text>
+          <Text style={styles.metricLabel}>Sent from phone</Text>
+          <Text style={styles.metricValue}>
+            {formatCount(presentation.sentCount)}
+          </Text>
         </View>
         <View style={styles.metric}>
           <Text style={styles.metricLabel}>Sections</Text>
           <Text style={styles.metricValue}>
-            {formatCount(completedTypes)} / {formatCount(totalTypes)}
+            {formatCount(presentation.completedTypes)} /{" "}
+            {formatCount(presentation.totalTypes)}
           </Text>
         </View>
         <View style={styles.metric}>
-          <Text style={styles.metricLabel}>Waiting</Text>
-          <Text style={styles.metricValue}>{formatCount(status.outboxCount)}</Text>
+          <Text style={styles.metricLabel}>Phone queue</Text>
+          <Text style={styles.metricValue}>
+            {formatCount(presentation.outboxCount)}
+          </Text>
         </View>
       </View>
 
       <View style={styles.footerRow}>
-        <Text style={styles.eta}>{formatEta(status)}</Text>
-        <Pressable style={styles.resumeButton} onPress={onResume}>
-          <Ionicons name="play" size={14} color="#000000" />
-          <Text style={styles.resumeText}>Resume</Text>
+        <Text style={styles.eta}>{formatLastCheck(lastCheckAt)}</Text>
+        <Pressable
+          style={[
+            styles.resumeButton,
+            presentation.action.disabled && styles.resumeButtonDisabled,
+          ]}
+          onPress={onResume}
+          disabled={presentation.action.disabled}
+        >
+          <Ionicons
+            name={presentation.action.icon as any}
+            size={14}
+            color="#000000"
+          />
+          <Text style={styles.resumeText}>{presentation.action.label}</Text>
         </Pressable>
       </View>
     </Group>
@@ -157,6 +150,17 @@ const styles = StyleSheet.create({
     borderRadius: 4,
     backgroundColor: "#30D158",
   },
+  steadyStateBox: {
+    backgroundColor: "#2C2C2E",
+    borderRadius: 8,
+    padding: 12,
+    marginBottom: 14,
+  },
+  steadyStateText: {
+    color: "#D1D1D6",
+    fontSize: 13,
+    lineHeight: 18,
+  },
   metricsGrid: {
     flexDirection: "row",
     flexWrap: "wrap",
@@ -197,6 +201,9 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     paddingHorizontal: 12,
     paddingVertical: 8,
+  },
+  resumeButtonDisabled: {
+    opacity: 0.5,
   },
   resumeText: {
     color: "#000000",

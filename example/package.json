@@ -6,7 +6,8 @@
     "start": "expo start",
     "android": "expo run:android",
     "ios": "expo run:ios",
-    "web": "expo start --web"
+    "web": "expo start --web",
+    "test:sync-status": "tsc --outDir /tmp/mo-health-sync-status-test --module commonjs --target es2022 --skipLibCheck utils/syncStatusPresentation.ts utils/syncStatusPresentation.test.ts && node /tmp/mo-health-sync-status-test/syncStatusPresentation.test.js"
   },
   "dependencies": {
     "expo": "~54.0.33",

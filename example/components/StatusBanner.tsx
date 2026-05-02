@@ -29,7 +29,7 @@ export function StatusBanner({ isSyncing, subtitle }: StatusBannerProps) {
       </View>
       <View style={styles.textContainer}>
         <Text style={styles.title}>
-          {isSyncing ? "Syncing Active" : "Not Syncing"}
+          {isSyncing ? "Daily Sync On" : "Sync Off"}
         </Text>
         <Text style={styles.subtitle}>{subtitle}</Text>
       </View>
