@@ -1,7 +1,12 @@
-import OpenWearablesHealthSDK, { HealthDataType } from "open-wearables";
+import OpenWearablesHealthSDK from "open-wearables";
 import { Alert } from "react-native";
 import { Group } from "./Group";
 import { ActionRow } from "./ActionRow";
+import {
+  ORDERED_HEALTH_TYPES,
+  SLEEP_AND_WORKOUT_TYPES,
+} from "../utils/healthTypes";
+import { ONGOING_SYNC_DAYS_BACK } from "../utils/syncConfig";
 
 interface ActionsGroupProps {
   isAuthorized: boolean | null;
@@ -20,35 +25,110 @@ export function ActionsGroup({
   onDisconnect,
   onToast,
 }: ActionsGroupProps) {
-  const requestAuthorization = async () => {
-    const granted = await OpenWearablesHealthSDK.requestAuthorization(
-      Object.values(HealthDataType)
+  const showActionError = (title: string, error: any) => {
+    const message = error?.message ?? String(error);
+    Alert.alert(
+      title,
+      message.includes("JSON") || message.includes("<")
+        ? "The server sent a web page instead of app data. The tunnel may have briefly gone bad. Reopen the app and try again."
+        : message
     );
-    onAuthChange(granted);
-    if (granted) {
-      onToast("Authorized");
-    } else {
-      Alert.alert(
-        "Access denied",
-        "Please grant health permissions to enable sync."
+  };
+
+  const requestAuthorization = async () => {
+    try {
+      const granted = await OpenWearablesHealthSDK.requestAuthorization(
+        ORDERED_HEALTH_TYPES
       );
+      onAuthChange(granted);
+      if (granted) {
+        onToast("Authorized");
+      } else {
+        Alert.alert(
+          "Access denied",
+          "Please grant health permissions to enable sync."
+        );
+      }
+    } catch (e: any) {
+      showActionError("Health authorization error", e);
     }
   };
 
   const toggleSync = async () => {
-    if (isSyncActive) {
-      await OpenWearablesHealthSDK.stopBackgroundSync();
-      onSyncChange(false);
-    } else {
-      const started = await OpenWearablesHealthSDK.startBackgroundSync(null);
-      onSyncChange(started ? started : true);
-      onToast("Sync started");
+    try {
+      if (isSyncActive) {
+        await OpenWearablesHealthSDK.stopBackgroundSync();
+        onSyncChange(false);
+      } else {
+        const started = await OpenWearablesHealthSDK.startBackgroundSync(
+          ONGOING_SYNC_DAYS_BACK
+        );
+        onSyncChange(started ? started : true);
+        onToast("Sync started");
+      }
+    } catch (e: any) {
+      showActionError("Sync error", e);
     }
   };
 
   const syncNow = async () => {
-    await OpenWearablesHealthSDK.syncNow();
-    onToast("Data synced");
+    try {
+      await OpenWearablesHealthSDK.startBackgroundSync(
+        ONGOING_SYNC_DAYS_BACK
+      );
+      await OpenWearablesHealthSDK.syncNow();
+      onToast("Data synced");
+    } catch (e: any) {
+      showActionError("Sync error", e);
+    }
+  };
+
+  const fullResync = async () => {
+    try {
+      const granted = await OpenWearablesHealthSDK.requestAuthorization(
+        ORDERED_HEALTH_TYPES
+      );
+      onAuthChange(granted);
+      if (!granted) {
+        Alert.alert(
+          "Health access needed",
+          "Open iPhone Settings, find Mo Health Sync, then turn on every Health permission you want synced."
+        );
+        return;
+      }
+
+      OpenWearablesHealthSDK.resetAnchors();
+      const started = await OpenWearablesHealthSDK.startBackgroundSync(null);
+      await OpenWearablesHealthSDK.syncNow();
+      onSyncChange(started ? started : true);
+      onToast("Full resync started");
+    } catch (e: any) {
+      showActionError("Full resync error", e);
+    }
+  };
+
+  const syncSleepAndWorkouts = async () => {
+    try {
+      const granted = await OpenWearablesHealthSDK.requestAuthorization(
+        SLEEP_AND_WORKOUT_TYPES
+      );
+      onAuthChange(granted);
+      if (!granted) {
+        Alert.alert(
+          "Health access needed",
+          "Open iPhone Settings, find Mo Health Sync, then turn on Sleep and Workouts."
+        );
+        return;
+      }
+
+      OpenWearablesHealthSDK.resetAnchors();
+      const started = await OpenWearablesHealthSDK.startBackgroundSync(null);
+      await OpenWearablesHealthSDK.syncNow();
+      onSyncChange(started ? started : true);
+      onToast("Sleep and workouts sync started");
+    } catch (e: any) {
+      showActionError("Sleep and workouts sync error", e);
+    }
   };
 
   const signOut = async () => {
@@ -87,8 +167,8 @@ export function ActionsGroup({
             title={isSyncActive ? "Stop Sync" : "Start Sync"}
             description={
               isSyncActive
-                ? "Background sync is active"
-                : "Begin syncing health data"
+                ? "Daily background updates are active"
+                : "Begin daily health updates"
             }
             iconName={isSyncActive ? "pause" : "play"}
             iconBgColor="#1A3D1A"
@@ -97,10 +177,26 @@ export function ActionsGroup({
           />
           <ActionRow
             title="Sync Now"
-            description="Force an immediate sync"
+            description="Send the latest few days now"
             iconName="sync-outline"
             iconBgColor="#0A2D5C"
             onPress={syncNow}
+            hasBorderBottom
+          />
+          <ActionRow
+            title="Full Resync"
+            description="Re-read all approved Apple Health data"
+            iconName="refresh-circle-outline"
+            iconBgColor="#3A2A0A"
+            onPress={fullResync}
+            hasBorderBottom
+          />
+          <ActionRow
+            title="Sync Sleep + Workouts"
+            description="Send sleep and workout history first"
+            iconName="bed-outline"
+            iconBgColor="#16324A"
+            onPress={syncSleepAndWorkouts}
             hasBorderBottom
           />
           <ActionRow

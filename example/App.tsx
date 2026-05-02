@@ -1,6 +1,6 @@
 import { Ionicons } from "@expo/vector-icons";
 import { useEvent } from "expo";
-import OpenWearablesHealthSDK, { HealthDataType } from "open-wearables";
+import OpenWearablesHealthSDK from "open-wearables";
 import { useEffect, useState } from "react";
 import {
   Alert,
@@ -17,10 +17,18 @@ import { ActionsGroup } from "./components/ActionsGroup";
 import { ProvidersGroup } from "./components/ProvidersGroup";
 import { SessionGroup } from "./components/SessionGroup";
 import { StatusBanner } from "./components/StatusBanner";
+import { SyncProgressGroup } from "./components/SyncProgressGroup";
 import { Toast } from "./components/Toast";
 import { useLogs } from "./hooks/useLogs";
 import { LogsScreen } from "./screens/LogsScreen";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
+import { ORDERED_HEALTH_TYPES } from "./utils/healthTypes";
+import { INITIAL_HOST } from "./utils/constants";
+import {
+  bootstrapOwnerSession,
+  canBootstrapOwnerSession,
+} from "./utils/ownerBootstrap";
+import { ONGOING_SYNC_DAYS_BACK } from "./utils/syncConfig";
 
 export default function App() {
   const onAuthErrorPayload = useEvent(OpenWearablesHealthSDK, "onAuthError");
@@ -29,32 +37,89 @@ export default function App() {
   const [isAuthorized, setIsAuthorized] = useState<boolean | null>(null);
   const [isSyncActive, setIsSyncActive] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<Record<string, any>>({});
+  const [lastWarning, setLastWarning] = useState<string | null>(null);
+  const [isBootstrapping, setIsBootstrapping] = useState(false);
   const [toast, setToast] = useState<{ message: string; key: number } | null>(
     null
   );
   const { logs, clearLogs } = useLogs();
 
-  const autoRequestAuthorization = async () => {
+  const showToast = (message: string) => {
+    setToast({ message, key: Date.now() });
+  };
+
+  const requestAllHealthAccess = async () => {
     const granted = await OpenWearablesHealthSDK.requestAuthorization(
-      Object.values(HealthDataType)
+      ORDERED_HEALTH_TYPES
     );
     setIsAuthorized(granted);
+    return granted;
+  };
+
+  const refreshStoredCredentials = () => {
+    const stored = OpenWearablesHealthSDK.getStoredCredentials();
+    setCredentials(stored ?? {});
+    return stored ?? {};
+  };
+
+  const runOwnerBootstrap = async (reason: string) => {
+    if (!canBootstrapOwnerSession()) return false;
+
+    setIsBootstrapping(true);
+    try {
+      await bootstrapOwnerSession();
+      const stored = refreshStoredCredentials();
+      const valid = Boolean(OpenWearablesHealthSDK.isSessionValid());
+      setIsConnected(valid);
+      if (valid) {
+        await requestAllHealthAccess();
+        setIsSyncActive(
+          Boolean(
+            await OpenWearablesHealthSDK.startBackgroundSync(
+              ONGOING_SYNC_DAYS_BACK
+            )
+          )
+        );
+        await OpenWearablesHealthSDK.syncNow();
+        setSyncStatus(OpenWearablesHealthSDK.getSyncStatus());
+        setLastWarning(null);
+        showToast(reason === "repair" ? "Connection repaired" : "Connected");
+      }
+      return Boolean(stored?.host && valid);
+    } catch (error) {
+      return false;
+    } finally {
+      setIsBootstrapping(false);
+    }
   };
 
   useEffect(() => {
     const init = async () => {
-      const stored = OpenWearablesHealthSDK.getStoredCredentials();
-      setCredentials(stored ?? {});
+      const beforeConfigure = OpenWearablesHealthSDK.getStoredCredentials();
 
-      if (stored?.host) {
-        OpenWearablesHealthSDK.configure(stored.host);
+      // Configure first so iOS can clear stale Keychain credentials after reinstall.
+      OpenWearablesHealthSDK.configure(INITIAL_HOST);
+
+      let stored = refreshStoredCredentials();
+      let valid = Boolean(OpenWearablesHealthSDK.isSessionValid());
+
+      const needsOwnerBootstrap =
+        !valid ||
+        !beforeConfigure?.host ||
+        beforeConfigure.host !== INITIAL_HOST;
+
+      if (needsOwnerBootstrap) {
+        await runOwnerBootstrap("startup");
+        stored = refreshStoredCredentials();
+        valid = Boolean(OpenWearablesHealthSDK.isSessionValid());
       }
 
-      const valid = Boolean(OpenWearablesHealthSDK.isSessionValid());
       setIsConnected(valid);
       if (valid) {
         setIsSyncActive(Boolean(OpenWearablesHealthSDK.isSyncActive()));
-        await autoRequestAuthorization();
+        setSyncStatus(OpenWearablesHealthSDK.getSyncStatus());
+        await requestAllHealthAccess();
       }
     };
 
@@ -63,26 +128,55 @@ export default function App() {
 
   useEffect(() => {
     if (!onAuthErrorPayload) return;
-    Alert.alert(onAuthErrorPayload.message);
+    setLastWarning(onAuthErrorPayload.message);
+    runOwnerBootstrap("repair").then((repaired) => {
+      if (!repaired) {
+        Alert.alert(
+          "Sync needs attention",
+          "The app could not authenticate with the server. It tried to repair the connection, but still needs attention."
+        );
+      }
+    });
   }, [onAuthErrorPayload]);
 
-  const refreshStoredCredentials = () => {
-    const stored = OpenWearablesHealthSDK.getStoredCredentials();
-    setCredentials(stored ?? {});
-  };
+  useEffect(() => {
+    if (!isConnected) return;
 
-  const showToast = (message: string) => {
-    setToast({ message, key: Date.now() });
-  };
+    const refreshStatus = () => {
+      const nextStatus = OpenWearablesHealthSDK.getSyncStatus();
+      setSyncStatus(nextStatus);
+      setIsSyncActive(Boolean(OpenWearablesHealthSDK.isSyncActive()));
+
+      if (nextStatus.wasDisconnected && lastWarning !== "network") {
+        setLastWarning("network");
+        Alert.alert(
+          "Sync paused",
+          "Your phone lost connection to the server. The app will retry when the connection comes back."
+        );
+      }
+
+      if (nextStatus.pendingSyncAfterUnlock && lastWarning !== "locked") {
+        setLastWarning("locked");
+        Alert.alert(
+          "Sync paused",
+          "Your phone is locked, so Apple Health is holding some data. Unlock the phone and tap Resume Sync."
+        );
+      }
+    };
+
+    refreshStatus();
+    const interval = setInterval(refreshStatus, 2000);
+    return () => clearInterval(interval);
+  }, [isConnected, lastWarning]);
 
   const handleConnectSuccess = () => {
     const stored = OpenWearablesHealthSDK.getStoredCredentials();
     setCredentials(stored ?? {});
     setIsConnected(true);
-    showToast("Connected successfully");
+    showToast("Mo Health Sync connected");
     // iOS only has 1 provider (HealthKit)
     if (Platform.OS === "ios" || stored?.provider) {
-      autoRequestAuthorization();
+      requestAllHealthAccess();
     }
   };
 
@@ -90,14 +184,45 @@ export default function App() {
     setIsAuthorized(null);
     setIsSyncActive(false);
     setIsConnected(false);
+    setSyncStatus({});
     refreshStoredCredentials();
   };
 
   const handleProviderChange = () => {
     setIsAuthorized(null);
     setIsSyncActive(false);
+    setSyncStatus({});
     refreshStoredCredentials();
-    autoRequestAuthorization();
+    requestAllHealthAccess();
+  };
+
+  const handleResumeSync = async () => {
+    try {
+      const stored = OpenWearablesHealthSDK.getStoredCredentials();
+      if (stored?.host) {
+        OpenWearablesHealthSDK.configure(stored.host);
+      }
+
+      const resumed = await OpenWearablesHealthSDK.resumeSync();
+      if (!resumed) {
+        const started = await OpenWearablesHealthSDK.startBackgroundSync(
+          ONGOING_SYNC_DAYS_BACK
+        );
+        setIsSyncActive(started ? started : true);
+      } else {
+        setIsSyncActive(true);
+      }
+
+      await OpenWearablesHealthSDK.syncNow();
+      setSyncStatus(OpenWearablesHealthSDK.getSyncStatus());
+      setLastWarning(null);
+      showToast("Sync resumed");
+    } catch (e: any) {
+      Alert.alert(
+        "Resume failed",
+        "The app could not resume by itself. Use Connect once, then future syncs should resume automatically."
+      );
+    }
   };
 
   const getProviderDisplayName = (): string | null => {
@@ -134,7 +259,7 @@ export default function App() {
           style={{ flex: 1 }}
         >
           <View style={styles.header}>
-            <Text style={styles.headerTitle}>Open Wearables</Text>
+            <Text style={styles.headerTitle}>Mo Health Sync</Text>
             <Pressable onPress={() => setShowLogs(true)} hitSlop={8}>
               <View style={styles.logsButton}>
                 <Ionicons
@@ -158,6 +283,11 @@ export default function App() {
             keyboardShouldPersistTaps="always"
           >
             <StatusBanner isSyncing={isSyncActive} subtitle={syncSubtitle} />
+            {isBootstrapping && (
+              <Text style={styles.bootstrappingText}>
+                Connecting to Mo Health cloud…
+              </Text>
+            )}
             {isConnected === false ? (
               <SessionGroup
                 credentials={credentials}
@@ -165,6 +295,11 @@ export default function App() {
               />
             ) : (
               <>
+                <SyncProgressGroup
+                  status={syncStatus}
+                  isConnected={isConnected}
+                  onResume={handleResumeSync}
+                />
                 <ProvidersGroup
                   savedProvider={credentials.provider}
                   onProviderChange={handleProviderChange}
@@ -237,5 +372,10 @@ const styles = StyleSheet.create({
     gap: 16,
     padding: 20,
     paddingTop: 4,
+  },
+  bootstrappingText: {
+    color: "#8E8E93",
+    fontSize: 14,
+    textAlign: "center",
   },
 });
